@@ -22,6 +22,11 @@ RUN curl -L -O 'https://download.qt.io/official_releases/qt/5.12/5.12.0/qt-opens
 ENV QTDIR /usr/local/Qt/5.12.0/gcc_64
 ENV PATH="/usr/local/Qt/5.12.0/gcc_64/bin/:${PATH}"
 
+# Cmake
+RUN curl -L -O 'https://github.com/Kitware/CMake/releases/download/v3.13.2/cmake-3.13.2-Linux-x86_64.sh' && \
+    chmod a+x cmake-3.13.2-Linux-x86_64.sh && \
+    ./cmake-3.13.2-Linux-x86_64.sh --prefix=/usr --skip-license
+
 RUN add-apt-repository -y 'ppa:ubuntu-toolchain-r/test'
 RUN apt-get -y update && apt-get install -y \
     g++ g++-6 g++-7 g++-8 \
