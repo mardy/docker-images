@@ -29,6 +29,6 @@ RUN curl -L -O 'https://github.com/Kitware/CMake/releases/download/v3.13.2/cmake
 
 RUN add-apt-repository -y 'ppa:ubuntu-toolchain-r/test'
 RUN apt-get -y update && apt-get install -y \
-    g++ g++-6 g++-7 g++-8 \
-    gcc gcc-6 gcc-7 gcc-8 \
+    g++ g++-5 g++-6 g++-7 g++-8 \
+    gcc gcc-5 gcc-6 gcc-7 gcc-8 \
     git
