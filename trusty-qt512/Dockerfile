@@ -27,8 +27,11 @@ RUN curl -L -O 'https://github.com/Kitware/CMake/releases/download/v3.13.2/cmake
     chmod a+x cmake-3.13.2-Linux-x86_64.sh && \
     ./cmake-3.13.2-Linux-x86_64.sh --prefix=/usr --skip-license
 
+# Compilers, plus some most common programming tools
 RUN add-apt-repository -y 'ppa:ubuntu-toolchain-r/test'
 RUN apt-get -y update && apt-get install -y \
     g++ g++-5 g++-6 g++-7 g++-8 \
     gcc gcc-5 gcc-6 gcc-7 gcc-8 \
-    git
+    build-essential \
+    git \
+    pkg-config
