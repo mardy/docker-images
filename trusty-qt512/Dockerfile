@@ -29,7 +29,7 @@ RUN curl -L -O 'https://github.com/Kitware/CMake/releases/download/v3.13.2/cmake
 
 # Core libraries
 RUN apt-get install -y \
-    libglu1-mesa-dev libxrender1
+    libglu1-mesa-dev libxrender1 libxkbcommon-x11-0
 
 # Compilers, plus some most common programming tools
 RUN add-apt-repository -y 'ppa:ubuntu-toolchain-r/test'
