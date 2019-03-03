@@ -27,6 +27,10 @@ RUN curl -L -O 'https://github.com/Kitware/CMake/releases/download/v3.13.2/cmake
     chmod a+x cmake-3.13.2-Linux-x86_64.sh && \
     ./cmake-3.13.2-Linux-x86_64.sh --prefix=/usr --skip-license
 
+# Core libraries
+RUN apt-get install -y \
+    libglu1-mesa-dev libxrender1
+
 # Compilers, plus some most common programming tools
 RUN add-apt-repository -y 'ppa:ubuntu-toolchain-r/test'
 RUN apt-get -y update && apt-get install -y \
