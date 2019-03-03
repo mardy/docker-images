@@ -34,4 +34,5 @@ RUN apt-get -y update && apt-get install -y \
     gcc gcc-5 gcc-6 gcc-7 gcc-8 \
     build-essential \
     git \
-    pkg-config
+    pkg-config \
+    xvfb
