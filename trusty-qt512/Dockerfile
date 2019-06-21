@@ -17,12 +17,12 @@ RUN apt-get -y update && apt-get install -y \
     software-properties-common # for add-apt-repository
 
 COPY qtifwsilent.qs qtifwsilent.qs
-RUN curl -L -O 'https://download.qt.io/official_releases/qt/${qtversion_major}/${qtversion_full}/qt-opensource-linux-x64-${qtversion_full}.run' && \
+RUN curl -L -O "https://download.qt.io/official_releases/qt/${qtversion_major}/${qtversion_full}/qt-opensource-linux-x64-${qtversion_full}.run" && \
     chmod +x qt-opensource-linux-x64-${qtversion_full}.run && \
     QT_INSTALL_DIR=/usr/local/Qt ./qt-opensource-linux-x64-${qtversion_full}.run --platform minimal --script qtifwsilent.qs && \
     rm -f qt-opensource-linux-x64-${qtversion_full}.run qtifwsilent.qs
 ENV QTDIR /usr/local/Qt/${qtversion_full}/gcc_64
-ENV PATH="/usr/local/Qt/${qtversion_full}/gcc_64/bin/:${PATH}"
+ENV PATH="/usr/local/Qt/${qtversion_full}/gcc_64/bin/:/usr/local/Qt/Tools/QtCreator/bin:${PATH}"
 
 # Cmake
 RUN curl -L -O 'https://github.com/Kitware/CMake/releases/download/v3.13.2/cmake-3.13.2-Linux-x86_64.sh' && \
