@@ -6,9 +6,11 @@ LABEL Description="Ubuntu trusty with newer gcc from ppa:ubuntu-toolchain-r/test
 # Dependencies of Qt
 RUN apt-get -y update && apt-get install -y \
     curl \
+    libasound2-dev \
     libfontconfig1-dev \
     libfreetype6-dev \
     libglu1-mesa-dev \
+    libgtk-3-dev \
     libx11-dev \
     libxext-dev \
     libxfixes-dev \
@@ -18,6 +20,7 @@ RUN apt-get -y update && apt-get install -y \
     libx11-xcb-dev \
     libxcb-glx0-dev \
     libxkbcommon-x11-dev \
+    python2.7 \
     xz-utils \
     software-properties-common # for add-apt-repository
 
