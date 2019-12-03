@@ -36,6 +36,8 @@ RUN apt-get -y update && apt-get install -y \
 RUN curl -L -O "https://download.qt.io/official_releases/qt/${qtversion_major}/${qtversion_full}/single/qt-everywhere-src-${qtversion_full}.tar.xz" && \
     tar xJf qt-everywhere-src-${qtversion_full}.tar.xz && \
     rm -f qt-everywhere-src-${qtversion_full}.tar.xz
+COPY 0001-QQuickTreeModelAdaptor1-fix-updating-of-ModelIndex-r.patch 0001-QQuickTreeModelAdaptor1-fix-updating-of-ModelIndex-r.patch
+RUN cd qt*/qtquickcontrols && patch -p1 < 0001-QQuickTreeModelAdaptor1-fix-updating-of-ModelIndex-r.patch && cd ../..
 RUN cd qt* && ./configure -opensource -confirm-license -nomake examples -nomake tests && make -j8 module-qtbase && make install && cd .. && rm -rf qt*
 ENV QTDIR /usr/local/Qt-${qtversion_full}/gcc_64
 ENV PATH="/usr/local/Qt-${qtversion_full}/gcc_64/bin/:${PATH}"
