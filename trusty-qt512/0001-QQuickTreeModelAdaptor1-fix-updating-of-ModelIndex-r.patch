@@ -1,0 +1,599 @@
+From 816c6b02a1dd353faf29d59b226d5ecb147cebb7 Mon Sep 17 00:00:00 2001
+From: Alberto Mardegan <mardy@users.sourceforge.net>
+Date: Thu, 24 Oct 2019 23:06:57 +0300
+Subject: [PATCH] QQuickTreeModelAdaptor1: fix updating of ModelIndex role
+
+The decision to store the original QModelIndex as a role has the
+unfortunate consequence that we need to emit the dataChanged() signal
+whenever its value change. The previous implementation of the "move
+rows" operation failed in delivering this update in most cases.
+
+While addressing that, this commit also fixes some similar issues with
+the HasChildren role not being notified in certain scenarios.
+
+Also, when the last child of an expanded item gets moved away and later
+placed back in the original position, the item should not remember its
+expanded state, but rather accept the children while staying collapsed.
+
+Last but not least, it's important that the endMoveRows() protected
+method is called *after* the original tree model has completed its
+movement, because otherwise its elements might be accessed while in the
+wrong state.
+Similarly, we don't want the dataChanged() signals to be emitted while
+rows are moved or removed; we queue up these events and fire them only
+after the item indexes have settled.
+
+Fixes: QTBUG-59606
+Change-Id: Ib981c912ea19908e1283cc463331c3053d4d6e7d
+---
+ src/controls/Private/qquicktreemodeladaptor.cpp    | 175 ++++++++++++++----
+ src/controls/Private/qquicktreemodeladaptor_p.h    |  26 +++
+ .../tst_qquicktreemodeladaptor.cpp                 | 202 ++++++++++++++++++++-
+ 3 files changed, 368 insertions(+), 35 deletions(-)
+
+diff --git a/src/controls/Private/qquicktreemodeladaptor.cpp b/src/controls/Private/qquicktreemodeladaptor.cpp
+index 287b388..f1f9270 100644
+--- a/src/controls/Private/qquicktreemodeladaptor.cpp
++++ b/src/controls/Private/qquicktreemodeladaptor.cpp
+@@ -52,7 +52,8 @@ QT_BEGIN_NAMESPACE
+ #endif
+ 
+ QQuickTreeModelAdaptor1::QQuickTreeModelAdaptor1(QObject *parent) :
+-    QAbstractListModel(parent), m_model(0), m_lastItemIndex(0)
++    QAbstractListModel(parent), m_model(0), m_lastItemIndex(0),
++    m_visibleRowsMoved(false), m_signalAggregatorStack(0)
+ {
+ }
+ 
+@@ -490,11 +491,13 @@ void QQuickTreeModelAdaptor1::collapseRow(int n)
+     if (!m_model || !isExpanded(n))
+         return;
+ 
++    SignalFreezer aggregator(this);
++
+     TreeItem &item = m_items[n];
+     item.expanded = false;
+     m_expandedItems.remove(item.index);
+     QVector<int> changedRole(1, ExpandedRole);
+-    emit dataChanged(index(n), index(n), changedRole);
++    queueDataChanged(index(n), index(n), changedRole);
+     int childrenCount = m_model->rowCount(item.index);
+     if ((item.index.flags() & Qt::ItemNeverHasChildren) || !m_model->hasChildren(item.index) || childrenCount == 0)
+         return;
+@@ -530,8 +533,18 @@ void QQuickTreeModelAdaptor1::removeVisibleRows(int startIndex, int endIndex, bo
+     if (doRemoveRows)
+         beginRemoveRows(QModelIndex(), startIndex, endIndex);
+     m_items.erase(m_items.begin() + startIndex, m_items.begin() + endIndex + 1);
+-    if (doRemoveRows)
++    if (doRemoveRows) {
+         endRemoveRows();
++
++        /* We need to update the model index for all the items below the removed ones */
++        int lastIndex = m_items.count() - 1;
++        if (startIndex <= lastIndex) {
++            const QModelIndex &topLeft = index(startIndex, 0, QModelIndex());
++            const QModelIndex &bottomRight = index(lastIndex, 0, QModelIndex());
++            const QVector<int> changedRole(1, ModelIndexRole);
++            queueDataChanged(topLeft, bottomRight, changedRole);
++        }
++    }
+ }
+ 
+ void QQuickTreeModelAdaptor1::modelHasBeenDestroyed()
+@@ -636,7 +649,7 @@ void QQuickTreeModelAdaptor1::modelRowsInserted(const QModelIndex & parent, int
+     if (parentRow >= 0) {
+         const QModelIndex& parentIndex = index(parentRow);
+         QVector<int> changedRole(1, HasChildrenRole);
+-        emit dataChanged(parentIndex, parentIndex, changedRole);
++        queueDataChanged(parentIndex, parentIndex, changedRole);
+         item = m_items.at(parentRow);
+         if (!item.expanded) {
+             ASSERT_CONSISTENCY();
+@@ -655,6 +668,7 @@ void QQuickTreeModelAdaptor1::modelRowsInserted(const QModelIndex & parent, int
+ void QQuickTreeModelAdaptor1::modelRowsAboutToBeRemoved(const QModelIndex & parent, int start, int end)
+ {
+     ASSERT_CONSISTENCY();
++    enableSignalAggregation();
+     if (parent == m_rootIndex || childrenVisible(parent)) {
+         const QModelIndex &smi = m_model->index(start, 0, parent);
+         int startIndex = itemIndex(smi);
+@@ -687,19 +701,30 @@ void QQuickTreeModelAdaptor1::modelRowsRemoved(const QModelIndex & parent, int s
+     if (parentRow >= 0) {
+         const QModelIndex& parentIndex = index(parentRow);
+         QVector<int> changedRole(1, HasChildrenRole);
+-        emit dataChanged(parentIndex, parentIndex, changedRole);
++        queueDataChanged(parentIndex, parentIndex, changedRole);
+     }
++    disableSignalAggregation();
+     ASSERT_CONSISTENCY();
+ }
+ 
+ void QQuickTreeModelAdaptor1::modelRowsAboutToBeMoved(const QModelIndex & sourceParent, int sourceStart, int sourceEnd, const QModelIndex & destinationParent, int destinationRow)
+ {
+     ASSERT_CONSISTENCY();
++    enableSignalAggregation();
++    m_visibleRowsMoved = false;
+     if (!childrenVisible(sourceParent))
+         return; // Do nothing now. See modelRowsMoved() below.
+ 
+     if (!childrenVisible(destinationParent)) {
+         modelRowsAboutToBeRemoved(sourceParent, sourceStart, sourceEnd);
++        /* If the destination parent has no children, we'll need to
++         * report a change on the HasChildrenRole */
++        if (isVisible(destinationParent) && m_model->rowCount(destinationParent) == 0) {
++            const QModelIndex &topLeft = index(itemIndex(destinationParent), 0, QModelIndex());
++            const QModelIndex &bottomRight = topLeft;
++            const QVector<int> changedRole(1, HasChildrenRole);
++            queueDataChanged(topLeft, bottomRight, changedRole);
++        }
+     } else {
+         int depthDifference = -1;
+         if (destinationParent.isValid()) {
+@@ -734,7 +759,9 @@ void QQuickTreeModelAdaptor1::modelRowsAboutToBeMoved(const QModelIndex & source
+ 
+         int totalMovedCount = endIndex - startIndex + 1;
+ 
+-        const bool visibleRowsMoved = startIndex != destIndex &&
++        /* This beginMoveRows() is matched by a endMoveRows() in the
++         * modelRowsMoved() method below. */
++        m_visibleRowsMoved = startIndex != destIndex &&
+             beginMoveRows(QModelIndex(), startIndex, endIndex, QModelIndex(), destIndex);
+ 
+         const QList<TreeItem> &buffer = m_items.mid(startIndex, totalMovedCount);
+@@ -757,48 +784,62 @@ void QQuickTreeModelAdaptor1::modelRowsAboutToBeMoved(const QModelIndex & source
+             m_items.replace(bufferCopyOffset + i, item);
+         }
+ 
+-        if (visibleRowsMoved)
+-            endMoveRows();
++        /* If both source and destination items are visible, the indexes of
++         * all the items in between will change. If they share the same
++         * parent, then this is all; however, if they belong to different
++         * parents, their bottom siblings will also get displaced, so their
++         * index also needs to be updated.
++         * Given that the bottom siblings of the top moved elements are
++         * already included in the update (since they lie between the
++         * source and the dest elements), we only need to worry about the
++         * siblings of the bottom moved element.
++         */
++        int top = qMin(startIndex, bufferCopyOffset);
++        int bottom = qMax(endIndex, bufferCopyOffset + totalMovedCount - 1);
++        if (sourceParent != destinationParent) {
++            const QModelIndex &bottomParent =
++                bottom == endIndex ? sourceParent : destinationParent;
++
++            int rowCount = m_model->rowCount(bottomParent);
++            if (rowCount > 0)
++                bottom = qMax(bottom, lastChildIndex(m_model->index(rowCount - 1, 0, bottomParent)));
++        }
++        const QModelIndex &topLeft = index(top, 0, QModelIndex());
++        const QModelIndex &bottomRight = index(bottom, 0, QModelIndex());
++        const QVector<int> changedRole(1, ModelIndexRole);
++        queueDataChanged(topLeft, bottomRight, changedRole);
+ 
+         if (depthDifference != 0) {
+             const QModelIndex &topLeft = index(bufferCopyOffset, 0, QModelIndex());
+             const QModelIndex &bottomRight = index(bufferCopyOffset + totalMovedCount - 1, 0, QModelIndex());
+             const QVector<int> changedRole(1, DepthRole);
+-            emit dataChanged(topLeft, bottomRight, changedRole);
++            queueDataChanged(topLeft, bottomRight, changedRole);
+         }
+     }
+ }
+ 
+ void QQuickTreeModelAdaptor1::modelRowsMoved(const QModelIndex & sourceParent, int sourceStart, int sourceEnd, const QModelIndex & destinationParent, int destinationRow)
+ {
+-    if (childrenVisible(destinationParent)) {
+-        if (!childrenVisible(sourceParent))
+-            modelRowsInserted(destinationParent, destinationRow, destinationRow + sourceEnd - sourceStart);
+-        else {
+-            int destIndex = -1;
+-            if (destinationRow == m_model->rowCount(destinationParent)) {
+-                const QModelIndex &emi = m_model->index(destinationRow - 1, 0, destinationParent);
+-                destIndex = lastChildIndex(emi) + 1;
+-            } else {
+-                destIndex = itemIndex(m_model->index(destinationRow, 0, destinationParent));
+-            }
++    if (!childrenVisible(sourceParent)) {
++        modelRowsInserted(destinationParent, destinationRow, destinationRow + sourceEnd - sourceStart);
++    } else if (!childrenVisible(destinationParent)) {
++        modelRowsRemoved(sourceParent, sourceStart, sourceEnd);
++    }
+ 
+-            const QModelIndex &emi = m_model->index(destinationRow + sourceEnd - sourceStart, 0, destinationParent);
+-            int endIndex = -1;
+-            if (isExpanded(emi)) {
+-                int rowCount = m_model->rowCount(emi);
+-                if (rowCount > 0)
+-                    endIndex = lastChildIndex(m_model->index(rowCount - 1, 0, emi));
+-            }
+-            if (endIndex == -1)
+-                endIndex = itemIndex(emi);
++    if (m_visibleRowsMoved)
++        endMoveRows();
+ 
+-            const QModelIndex &topLeft = index(destIndex, 0, QModelIndex());
+-            const QModelIndex &bottomRight = index(endIndex, 0, QModelIndex());
+-            const QVector<int> changedRole(1, ModelIndexRole);
+-            emit dataChanged(topLeft, bottomRight, changedRole);
+-        }
++    if (isVisible(sourceParent) && m_model->rowCount(sourceParent) == 0) {
++        int parentRow = itemIndex(sourceParent);
++        collapseRow(parentRow);
++        const QModelIndex &topLeft = index(parentRow, 0, QModelIndex());
++        const QModelIndex &bottomRight = topLeft;
++        const QVector<int> changedRole { ExpandedRole, HasChildrenRole };
++        queueDataChanged(topLeft, bottomRight, changedRole);
+     }
++
++    disableSignalAggregation();
++
+     ASSERT_CONSISTENCY();
+ }
+ 
+@@ -887,4 +928,70 @@ bool QQuickTreeModelAdaptor1::testConsistency(bool dumpOnFail) const
+     return true;
+ }
+ 
++void QQuickTreeModelAdaptor1::enableSignalAggregation() {
++    m_signalAggregatorStack++;
++}
++
++void QQuickTreeModelAdaptor1::disableSignalAggregation() {
++    m_signalAggregatorStack--;
++    Q_ASSERT(m_signalAggregatorStack >= 0);
++    if (m_signalAggregatorStack == 0) {
++        emitQueuedSignals();
++    }
++}
++
++void QQuickTreeModelAdaptor1::queueDataChanged(const QModelIndex &topLeft,
++                                               const QModelIndex &bottomRight,
++                                               const QVector<int> &roles)
++{
++    if (isAggregatingSignals()) {
++        m_queuedDataChanged.append(std::move(DataChangedParams { topLeft, bottomRight, roles }));
++    } else {
++        emit dataChanged(topLeft, bottomRight, roles);
++    }
++}
++
++void QQuickTreeModelAdaptor1::emitQueuedSignals()
++{
++    QVector<DataChangedParams> combinedUpdates;
++    /* First, iterate through the queued updates and merge the overlapping ones
++     * to reduce the number of updates.
++     * We don't merge adjacent updates, because they are typically filed with a
++     * different role (a parent row is next to its children).
++     */
++    for (const DataChangedParams &dataChange: m_queuedDataChanged) {
++        int startRow = dataChange.topLeft.row();
++        int endRow = dataChange.bottomRight.row();
++        bool merged = false;
++        for (DataChangedParams &combined: combinedUpdates) {
++            int combinedStartRow = combined.topLeft.row();
++            int combinedEndRow = combined.bottomRight.row();
++            if ((startRow <= combinedStartRow && endRow >= combinedStartRow) ||
++                (startRow <= combinedEndRow && endRow >= combinedEndRow)) {
++                if (startRow < combinedStartRow) {
++                    combined.topLeft = dataChange.topLeft;
++                }
++                if (endRow > combinedEndRow) {
++                    combined.bottomRight = dataChange.bottomRight;
++                }
++                for (int role: dataChange.roles) {
++                    if (!combined.roles.contains(role))
++                        combined.roles.append(role);
++                }
++                merged = true;
++                break;
++            }
++        }
++        if (!merged) {
++            combinedUpdates.append(dataChange);
++        }
++    }
++
++    /* Finally, emit the dataChanged signals */
++    for (const DataChangedParams &dataChange: combinedUpdates) {
++        emit dataChanged(dataChange.topLeft, dataChange.bottomRight, dataChange.roles);
++    }
++    m_queuedDataChanged.clear();
++}
++
+ QT_END_NAMESPACE
+diff --git a/src/controls/Private/qquicktreemodeladaptor_p.h b/src/controls/Private/qquicktreemodeladaptor_p.h
+index e719231..4aa5737 100644
+--- a/src/controls/Private/qquicktreemodeladaptor_p.h
++++ b/src/controls/Private/qquicktreemodeladaptor_p.h
+@@ -157,12 +157,38 @@ private:
+         }
+     };
+ 
++    struct DataChangedParams {
++        QModelIndex topLeft;
++        QModelIndex bottomRight;
++        QVector<int> roles;
++    };
++
++    struct SignalFreezer {
++        SignalFreezer(QQuickTreeModelAdaptor1 *parent): m_parent(parent) {
++            m_parent->enableSignalAggregation();
++        }
++        ~SignalFreezer() { m_parent->disableSignalAggregation(); }
++    private:
++        QQuickTreeModelAdaptor1 *m_parent;
++    };
++
++    void enableSignalAggregation();
++    void disableSignalAggregation();
++    bool isAggregatingSignals() const { return m_signalAggregatorStack > 0; }
++    void queueDataChanged(const QModelIndex &topLeft,
++                          const QModelIndex &bottomRight,
++                          const QVector<int> &roles);
++    void emitQueuedSignals();
++
+     QPointer<QAbstractItemModel> m_model;
+     QPersistentModelIndex m_rootIndex;
+     QList<TreeItem> m_items;
+     QSet<QPersistentModelIndex> m_expandedItems;
+     QList<TreeItem *> m_itemsToExpand;
+     mutable int m_lastItemIndex;
++    bool m_visibleRowsMoved;
++    int m_signalAggregatorStack;
++    QVector<DataChangedParams> m_queuedDataChanged;
+ };
+ 
+ QT_END_NAMESPACE
+diff --git a/tests/auto/qquicktreemodeladaptor/tst_qquicktreemodeladaptor.cpp b/tests/auto/qquicktreemodeladaptor/tst_qquicktreemodeladaptor.cpp
+index 96659a2..f085606 100644
+--- a/tests/auto/qquicktreemodeladaptor/tst_qquicktreemodeladaptor.cpp
++++ b/tests/auto/qquicktreemodeladaptor/tst_qquicktreemodeladaptor.cpp
+@@ -40,6 +40,7 @@ public:
+     void compareModels(QQuickTreeModelAdaptor1 &tma, TestModel &model);
+     void expandAndTest(const QModelIndex &idx, QQuickTreeModelAdaptor1 &tma, bool expandable, int expectedRowCountDifference);
+     void collapseAndTest(const QModelIndex &idx, QQuickTreeModelAdaptor1 &tma, bool expandable, int expectedRowCountDifference);
++    bool rowRoleWasChanged(const QSignalSpy &captured, int row, int role);
+ 
+ private slots:
+     void initTestCase();
+@@ -73,7 +74,10 @@ private slots:
+ 
+     void moveRows_data();
+     void moveRows();
++    void moveRowsDataChanged_data();
++    void moveRowsDataChanged();
+     void reparentOnSameRow();
++    void moveAllChildren();
+ 
+     void selectionForRowRange();
+ 
+@@ -170,7 +174,7 @@ void tst_QQuickTreeModelAdaptor::collapseAndTest(const QModelIndex &idx, QQuickT
+         QCOMPARE(rowsRemovedArgs.at(2).toInt(), tma.itemIndex(idx) + expectedRowCountDifference);
+ 
+         // Data changed for the parent's ExpandedRole (value checked above)
+-        QCOMPARE(dataChangedSpy.count(), 1);
++        QVERIFY(dataChangedSpy.count() >= 1);
+         const QVariantList &dataChangedArgs = dataChangedSpy.first();
+         QCOMPARE(dataChangedArgs.at(0).toModelIndex(), tmaIdx);
+         QCOMPARE(dataChangedArgs.at(1).toModelIndex(), tmaIdx);
+@@ -182,6 +186,19 @@ void tst_QQuickTreeModelAdaptor::collapseAndTest(const QModelIndex &idx, QQuickT
+     }
+ }
+ 
++bool tst_QQuickTreeModelAdaptor::rowRoleWasChanged(const QSignalSpy &captured, int row, int role)
++{
++    for (const QVariantList &args: captured) {
++        int startRow = args.at(0).toModelIndex().row();
++        int endRow = args.at(1).toModelIndex().row();
++        if (row >= startRow && row <= endRow) {
++            QVector<int> roles = args.at(2).value<QVector<int>>();
++            if (roles.contains(role)) return true;
++        }
++    }
++    return false;
++}
++
+ void tst_QQuickTreeModelAdaptor::compareModels(QQuickTreeModelAdaptor1 &tma, TestModel &model)
+ {
+     QModelIndex parent = tma.rootIndex();
+@@ -1153,6 +1170,142 @@ void tst_QQuickTreeModelAdaptor::moveRows()
+     compareModels(tma, model);
+ }
+ 
++void tst_QQuickTreeModelAdaptor::moveRowsDataChanged_data()
++{
++    /* This is the list of rows in the *list* model which are expended. */
++    QTest::addColumn<QVector<int>>("expandedRows");
++
++    /* Here's the row to be moved (always just one) and the destination
++     * position. We use a QVector<int> to identify a single row of the tree
++     * model: the array value at index n represents the row number at the depth
++     * n.
++     */
++    QTest::addColumn<QVector<int>>("sourcePath");
++    QTest::addColumn<QVector<int>>("destPath");
++
++    /* This is the list of expected changed rows in the *list* model. */
++    QTest::addColumn<QSet<int>>("expectedRowChanges");
++
++    QTest::newRow("From and to top-level parent")
++            << QVector<int> {}
++            << QVector<int> { 4 }
++            << QVector<int> { 3 }
++            << QSet<int> { 3, 4 };
++
++    QTest::newRow("From and to top-level parent, expanded")
++            << QVector<int> { 3, 5 }
++            << QVector<int> { 4 }
++            << QVector<int> { 3 }
++            << QSet<int> { 3, 4, 5, 6, 7, 8, 9 };
++
++    QTest::newRow("From and to top-level parent, expanded, down")
++            << QVector<int> { 3, 5 }
++            << QVector<int> { 3 }
++            << QVector<int> { 5 }
++            << QSet<int> { 3, 4, 5, 6, 7, 8, 9 };
++
++    /* Expected visible result:
++     * A      A
++     * D      D
++     * `-E    |-E
++     * F      `-H
++     * G   -> F
++     * |-H    G
++     * |-I    |-I
++     * `-L    `-L
++     * M      M
++     */
++    QTest::newRow("Visible move, different parents")
++            << QVector<int> { 3, 1 }
++            << QVector<int> { 3, 0 }
++            << QVector<int> { 1, 1 }
++            << QSet<int> { 3, 4, 5, 6, 7 };
++
++    QTest::newRow("Move to non expanded parent")
++            << QVector<int> {}
++            << QVector<int> { 3 }
++            << QVector<int> { 1, 0 }
++            << QSet<int> { 3 };
++}
++
++void tst_QQuickTreeModelAdaptor::moveRowsDataChanged()
++{
++    QFETCH(QVector<int>, expandedRows);
++    QFETCH(QVector<int>, sourcePath);
++    QFETCH(QVector<int>, destPath);
++    QFETCH(QSet<int>, expectedRowChanges);
++
++    TestModel model(0, 1);
++    model.alternateChildlessRows = false;
++    model.fetchMore(QModelIndex());
++    QQuickTreeModelAdaptor1 tma;
++    tma.setModel(&model);
++
++    /* Build this model:
++     *   A
++     *   |-B
++     *   `-C
++     *   D
++     *   `-E
++     *   F
++     *   G
++     *   |-H
++     *   |-I
++     *   | |-J
++     *   | `-K
++     *   `-L
++     *   M
++     */
++    model.insertRows(0, 5, QModelIndex());
++    QModelIndex index = model.index(0, 0);
++    model.insertRows(0, 2, index);
++    index = model.index(1, 0);
++    model.insertRows(0, 1, index);
++    index = model.index(3, 0);
++    model.insertRows(0, 3, index);
++    index = model.index(1, 0, index);
++    model.insertRows(0, 2, index);
++
++    for (int row: expandedRows) {
++        tma.expandRow(row);
++    }
++
++    /* Find the source index */
++    int sourceRow = sourcePath.takeLast();
++    QModelIndex sourceIndex;
++    for (int row: sourcePath) {
++        sourceIndex = model.index(row, 0, sourceIndex);
++    }
++
++    /* Find the destination index */
++    int destRow = destPath.takeLast();
++    QModelIndex destIndex;
++    for (int row: destPath) {
++        destIndex = model.index(row, 0, destIndex);
++    }
++
++    QSignalSpy dataChangedSpy(&tma, SIGNAL(dataChanged(QModelIndex,QModelIndex,QVector<int>)));
++
++    QVERIFY(model.moveRows(sourceIndex, sourceRow, 1, destIndex, destRow));
++
++    QSet<int> emittedChanges;
++    for (int i = 0; i < dataChangedSpy.count(); i++) {
++        QVariantList args = dataChangedSpy.at(i);
++        QVector<int> roles = args.at(2).value<QVector<int>>();
++        if (!roles.isEmpty() &&
++            !roles.contains(QQuickTreeModelAdaptor1::ModelIndexRole))
++            continue;
++
++        const QModelIndex topLeft = args.at(0).value<QModelIndex>();
++        const QModelIndex bottomRight = args.at(1).value<QModelIndex>();
++        for (int row = topLeft.row(); row <= bottomRight.row(); row++) {
++            emittedChanges.insert(row);
++        }
++    }
++
++    QCOMPARE(emittedChanges, expectedRowChanges);
++}
++
+ void tst_QQuickTreeModelAdaptor::reparentOnSameRow()
+ {
+     TestModel model(2, 1);
+@@ -1203,6 +1356,53 @@ void tst_QQuickTreeModelAdaptor::reparentOnSameRow()
+     compareModels(tma, model);
+ }
+ 
++void tst_QQuickTreeModelAdaptor::moveAllChildren()
++{
++    TestModel model(0, 1);
++    model.alternateChildlessRows = false;
++    model.fetchMore(QModelIndex());
++    QQuickTreeModelAdaptor1 tma;
++    tma.setModel(&model);
++
++    /* Build this model:
++     *   A
++     *   B
++     *   `-C
++     */
++    model.insertRows(0, 2, QModelIndex());
++    QPersistentModelIndex aIndex(model.index(0, 0));
++    QPersistentModelIndex bIndex(model.index(1, 0));
++    model.insertRows(0, 1, bIndex);
++
++    QCOMPARE(model.rowCount(QModelIndex()), 2);
++    /* Expand B, then move C under A */
++    tma.expandRow(1);
++
++
++    QSignalSpy dataChangedSpy(&tma, SIGNAL(dataChanged(QModelIndex,QModelIndex,QVector<int>)));
++
++    QVERIFY(model.moveRows(bIndex, 0, 1, aIndex, 0));
++
++    /* Check the outcome */
++    QCOMPARE(tma.data(aIndex, QQuickTreeModelAdaptor1::HasChildrenRole).toBool(), true);
++    QCOMPARE(tma.data(bIndex, QQuickTreeModelAdaptor1::HasChildrenRole).toBool(), false);
++    QVERIFY(rowRoleWasChanged(dataChangedSpy, 0, QQuickTreeModelAdaptor1::HasChildrenRole));
++    QVERIFY(rowRoleWasChanged(dataChangedSpy, 1, QQuickTreeModelAdaptor1::HasChildrenRole));
++    dataChangedSpy.clear();
++
++    /* Move C back into under B */
++    QVERIFY(model.moveRows(aIndex, 0, 1, bIndex, 0));
++
++    QCOMPARE(tma.data(aIndex, QQuickTreeModelAdaptor1::HasChildrenRole).toBool(), false);
++    QCOMPARE(tma.data(bIndex, QQuickTreeModelAdaptor1::HasChildrenRole).toBool(), true);
++    QVERIFY(rowRoleWasChanged(dataChangedSpy, 0, QQuickTreeModelAdaptor1::HasChildrenRole));
++    QVERIFY(rowRoleWasChanged(dataChangedSpy, 1, QQuickTreeModelAdaptor1::HasChildrenRole));
++    /* B must not be in expanded state, since it previously lost all its children */
++    QCOMPARE(tma.data(bIndex, QQuickTreeModelAdaptor1::ExpandedRole).toBool(), false);
++
++    dataChangedSpy.clear();
++}
++
+ void tst_QQuickTreeModelAdaptor::selectionForRowRange()
+ {
+     const int ModelRowCount = 9;
+-- 
+2.7.4
+
