@@ -42,8 +42,8 @@ RUN apt-get install -y \
 RUN add-apt-repository -y 'ppa:ubuntu-toolchain-r/test'
 RUN add-apt-repository -y 'ppa:mardy/qbs-on-lts'
 RUN apt-get -y update && apt-get install -y \
-    g++ g++-5 g++-6 g++-7 g++-8 \
-    gcc gcc-5 gcc-6 gcc-7 gcc-8 \
+    g++ g++-5 g++-6 g++-7 g++-8 g++-9 \
+    gcc gcc-5 gcc-6 gcc-7 gcc-8 gcc-9 \
     build-essential \
     git \
     pkg-config \
