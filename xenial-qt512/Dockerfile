@@ -1,9 +1,13 @@
 FROM ubuntu:16.04
-ARG qtversion_major=5.12
-ARG qtversion_full=5.12.4
 LABEL Description="Ubuntu Xenial with newer gcc from ppa:ubuntu-toolchain-r/test, Qt 5.12 and git"
+ARG QT_VERSION=5.12.9
+ARG QT_MODULES=
+ARG QT_HOST=linux
+ARG QT_TARGET=desktop
+ARG QT_ARCH=
 
-# Dependencies of the Qt offline installer
+
+# Dependencies of Qt
 RUN apt-get -y update && apt-get install -y \
     curl \
     libdbus-1-3 \
@@ -14,15 +18,16 @@ RUN apt-get -y update && apt-get install -y \
     libglib2.0-0 \
     libx11-6 \
     libx11-xcb1 \
+    python3-pip \
     software-properties-common # for add-apt-repository
 
-COPY qtifwsilent.qs qtifwsilent.qs
-RUN curl -L -O "https://download.qt.io/official_releases/qt/${qtversion_major}/${qtversion_full}/qt-opensource-linux-x64-${qtversion_full}.run" && \
-    chmod +x qt-opensource-linux-x64-${qtversion_full}.run && \
-    QT_INSTALL_DIR=/usr/local/Qt ./qt-opensource-linux-x64-${qtversion_full}.run --platform minimal --script qtifwsilent.qs && \
-    rm -f qt-opensource-linux-x64-${qtversion_full}.run qtifwsilent.qs
-ENV QTDIR /usr/local/Qt/${qtversion_full}/gcc_64
-ENV PATH="/usr/local/Qt/${qtversion_full}/gcc_64/bin/:/usr/local/Qt/Tools/QtCreator/bin:${PATH}"
+RUN pip3 install aqtinstall
+
+RUN aqt install --outputdir /usr/local/Qt ${QT_VERSION} ${QT_HOST} ${QT_TARGET} ${QT_ARCH} -m ${QT_MODULES}
+ENV QTDIR /usr/local/Qt/${QT_VERSION}/gcc_64
+ENV PATH="/usr/local/Qt/${QT_VERSION}/gcc_64/bin/:/usr/local/Qt/Tools/QtCreator/bin:${PATH}"
+ENV QML2_IMPORT_PATH /usr/local/Qt/${QT_VERSION}/gcc_64/qml/
+
 
 # Cmake
 RUN curl -L -O 'https://github.com/Kitware/CMake/releases/download/v3.13.2/cmake-3.13.2-Linux-x86_64.sh' && \
@@ -35,10 +40,12 @@ RUN apt-get install -y \
 
 # Compilers, plus some most common programming tools
 RUN add-apt-repository -y 'ppa:ubuntu-toolchain-r/test'
+RUN add-apt-repository -y 'ppa:mardy/qbs-on-lts'
 RUN apt-get -y update && apt-get install -y \
     g++ g++-5 g++-6 g++-7 g++-8 \
     gcc gcc-5 gcc-6 gcc-7 gcc-8 \
     build-essential \
     git \
     pkg-config \
+    qbs \
     xvfb
