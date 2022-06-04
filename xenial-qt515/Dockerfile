@@ -18,6 +18,11 @@ RUN apt-get -y update && apt-get install -y \
     libglib2.0-0 \
     libx11-6 \
     libx11-xcb1 \
+    libxcb-icccm4 \
+    libxcb-image0 \
+    libxcb-keysyms1 \
+    libxcb-render-util0 \
+    libxcb-xinerama0 \
     software-properties-common # for add-apt-repository
 
 # Need a newer python for aqt
