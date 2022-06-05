@@ -18,8 +18,14 @@ RUN apt-get -y update && apt-get install -y \
     libglib2.0-0 \
     libx11-6 \
     libx11-xcb1 \
-    python3-pip \
     software-properties-common # for add-apt-repository
+
+# Need a newer python for aqt
+RUN add-apt-repository -y 'ppa:savoury1/python' && apt-get -y update
+RUN apt-get install -y python3.9 python3.9-distutils
+RUN update-alternatives --install /usr/bin/python3 python /usr/bin/python3.5 1
+RUN update-alternatives --install /usr/bin/python3 python /usr/bin/python3.9 2 && update-alternatives --set python /usr/bin/python3.9
+RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python3 get-pip.py --force-reinstall
 
 RUN pip3 install aqtinstall
 
@@ -27,6 +33,9 @@ RUN aqt install --outputdir /usr/local/Qt ${QT_VERSION} ${QT_HOST} ${QT_TARGET} 
 ENV QTDIR /usr/local/Qt/${QT_VERSION}/gcc_64
 ENV PATH="/usr/local/Qt/${QT_VERSION}/gcc_64/bin/:/usr/local/Qt/Tools/QtCreator/bin:${PATH}"
 ENV QML2_IMPORT_PATH /usr/local/Qt/${QT_VERSION}/gcc_64/qml/
+
+# Restore original python version as default
+RUN update-alternatives --set python /usr/bin/python3.5
 
 
 # Cmake
