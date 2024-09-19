@@ -33,8 +33,12 @@ RUN update-alternatives --install /usr/bin/python3 python /usr/bin/python3.9 2 &
 RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python3 get-pip.py --force-reinstall
 
 RUN pip3 install aqtinstall
-
-RUN aqt install-qt --outputdir /usr/local/Qt ${QT_HOST} ${QT_TARGET} ${QT_VERSION} ${QT_ARCH} -m ${QT_MODULES}
+COPY aqtsettings.ini aqtsettings.ini
+RUN aqt \
+        -c aqtsettings.ini \
+        install-qt \
+        -b https://qt-mirror.dannhauer.de/ \
+        --outputdir /usr/local/Qt ${QT_HOST} ${QT_TARGET} ${QT_VERSION} ${QT_ARCH} -m ${QT_MODULES}
 ENV QTDIR /usr/local/Qt/${QT_VERSION}/gcc_64
 ENV PATH="/usr/local/Qt/${QT_VERSION}/gcc_64/bin/:/usr/local/Qt/Tools/QtCreator/bin:${PATH}"
 ENV QML2_IMPORT_PATH /usr/local/Qt/${QT_VERSION}/gcc_64/qml/
